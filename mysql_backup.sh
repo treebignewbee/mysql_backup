@@ -1,103 +1,142 @@
 #!/bin/bash
-# mysql_backup.sh: backup mysql databases and keep newest 5 days backup.  
-#  
-# ${db_user} is mysql username  
-# ${db_password} is mysql password  
-# ${db_host} is mysql host   
-# —————————–  
-#/root/mysql_backup.sh
-# everyday 3:00 AM execute database backup
-# 0 3 * * * /root/mysql_backup.sh
-#/etc/cron.daily
 
-db_user="backup"
-db_password="8H2QQQBEypp"
-db_host="localhost"
-# the directory for story your backup file.  #
-backup_dir="/home/backup/mysql/"
-# 要备份的数据库名 #
-#all_db="$(${mysql} -u ${db_user} -h ${db_host} -p${db_password} -Bse 'show databases')" #
-all_db="dbname"
+# ---------------------------------------------------------------------------------------
+# MySQL Database Backup Script
+# ---------------------------------------------------------------------------------------
+# This script is designed to automate the backup of MySQL databases. It creates a 
+# compressed backup of specified databases, retains backups for a specified number of 
+# days, and synchronizes the backups to a remote server using rsync.
+#
+# Recommended Usage:
+# To schedule this script to run automatically at 3:00 AM every day, add the following 
+# entry to your crontab:
+# 
+# 0 3 * * * /path/to/mysql_backup.sh
+#
+# Ensure the script has executable permissions:
+# chmod +x /path/to/mysql_backup.sh
+#
+# ---------------------------------------------------------------------------------------
 
-# 要保留的备份天数 #
+# ------------------------ Database Backup Configuration ------------------------
+
+# MySQL username used for database backup (e.g., backup_user)
+db_user="your_mysql_username"
+
+# MySQL password for the specified user (e.g., yourpassword123)
+db_password="your_mysql_password"
+
+# MySQL host address, usually localhost, but can also be the IP address of a remote database (e.g., 127.0.0.1)
+db_host="your_mysql_host"
+
+# Name(s) of the database(s) to be backed up; for multiple databases, separate names with spaces (e.g., "db1 db2 db3")
+all_db="your_database_name"
+
+# Directory path where the backup files will be stored; make sure the directory exists and has enough storage space (e.g., /home/backup/mysql)
+backup_dir="/path/to/backup/directory"
+
+# Number of days to keep backups; backup files older than this number of days will be deleted (e.g., 10)
 backup_day=10
 
-#数据库备份日志文件存储的路径
-logfile="/var/log/mysql_backup.log"
+# Path to the log file that records the backup process; ensure the directory exists (e.g., /var/log/mysql_backup.log)
+logfile="/path/to/logfile/mysql_backup.log"
 
-###ssh端口号###
-ssh_port=1204
-###定义ssh auto key的文件###
-id_rsa=/root/auth_key/id_rsa_153.141.rsa
-###定义ssh auto username###
-id_rsa_user=rsync
-###定义要同步的远程服务器的目录路径（必须是绝对路径）###
-clientPath="/home/backup/mysql"
-###定义要镜像的本地文件目录路径 源服务器（必须是绝对路径）###
-serverPath=${backup_dir}
-###定义生产环境的ip###
-web_ip="192.168.0.2"
+# Automatically detect mysql and mysqldump paths; usually no need to modify these
+mysql="$(command -v mysql)"
+mysqldump="$(command -v mysqldump)"
 
-# date format for backup file (dd-mm-yyyy)  #
+# Date format for backup file (e.g., YYYY-MM-DD)
 time="$(date +"%Y-%m-%d")"
 
-# mysql, ${mysqldump} and some other bin's path  #
-mysql="/usr/local/mysql-5.5.33/bin/mysql"
-mysqldump="/usr/local/mysql-5.5.33/bin/mysqldump"
+# ------------------------ Remote Synchronization Configuration ------------------------
 
-# the directory for story the newest backup  #
-test ! -d ${backup_dir} && mkdir -p ${backup_dir}
+# SSH port number used for remote synchronization (e.g., 22 for default SSH)
+ssh_port=your_ssh_port
 
-#备份数据库函数#
-mysql_backup()
-{
-    # 取所有的数据库名 #
-    for db in ${all_db}
-    do
-        backname=${db}.${time}
-        dumpfile=${backup_dir}${backname}
+# Path to the SSH private key used for automated login during rsync synchronization (e.g., /root/.ssh/id_rsa)
+id_rsa="/path/to/ssh/private_key"
+
+# SSH username used for logging into the remote server during rsync synchronization (e.g., rsync_user)
+id_rsa_user="your_ssh_username"
+
+# Absolute path to the backup directory on the remote server; make sure this path exists on the remote server (e.g., /home/backup/mysql)
+clientPath="/remote/server/backup/path"
+
+# Absolute path to the local backup directory to be mirrored to the remote server (e.g., /home/backup/mysql)
+serverPath="${backup_dir}"
+
+# IP address or hostname of the remote server used for rsync synchronization (e.g., 192.168.0.2)
+web_ip="remote_server_ip_or_hostname"
+
+# ------------------------ Script Functions ------------------------
+
+# Log a message with a timestamp
+log() {
+    echo "$(date +'%Y-%m-%d %T') $1" >> "${logfile}"
+}
+
+# Create necessary directories if they do not exist
+create_directories() {
+    mkdir -p "${backup_dir}" || { log "Failed to create backup directory"; exit 1; }
+    mkdir -p "$(dirname "${logfile}")" || { log "Failed to create log directory"; exit 1; }
+}
+
+# Backup MySQL databases
+mysql_backup() {
+    for db in ${all_db}; do
+        backname="${db}.${time}"
+        dumpfile="${backup_dir}/${backname}.sql"
         
-        #将备份的时间、数据库名存入日志
-        echo "------"$(date +'%Y-%m-%d %T')" Beginning database "${db}" backup--------" >>${logfile}
-        ${mysqldump} -F -u${db_user} -h${db_host} -p${db_password} ${db} > ${dumpfile}.sql 2>>${logfile} 2>&1
-        
-        #开始将压缩数据日志写入log
-        echo $(date +'%Y-%m-%d %T')" Beginning zip ${dumpfile}.sql" >>${logfile}
-        #将备份数据库文件库压成ZIP文件，并删除先前的SQL文件. #
-        tar -czvf ${backname}.tar.gz ${backname}.sql 2>&1 && rm ${dumpfile}.sql 2>>${logfile} 2>&1 
-        
-        #将压缩后的文件名存入日志。
-        echo "backup file name:"${dumpfile}".tar.gz" >>${logfile}
-        echo -e "-------"$(date +'%Y-%m-%d %T')" Ending database "${db}" backup-------\n" >>${logfile}    
+        log "Starting backup for database ${db}"
+        if ${mysqldump} -F -u"${db_user}" -h"${db_host}" -p"${db_password}" "${db}" > "${dumpfile}" 2>>"${logfile}"; then
+            log "Backup for ${db} completed, compressing ${dumpfile}"
+            if tar -czf "${dumpfile}.tar.gz" -C "${backup_dir}" "${backname}.sql"; then
+                rm -f "${dumpfile}"
+                log "Backup file created: ${dumpfile}.tar.gz"
+            else
+                log "Failed to compress backup file ${dumpfile}"
+                return 1
+            fi
+        else
+            log "Backup for ${db} failed"
+            return 1
+        fi
     done
 }
 
-delete_old_backup()
-{    
-    echo "delete backup file:" >>${logfile}
-    # 删除旧的备份 查找出当前目录下七天前生成的文件，并将之删除
-    find ${backup_dir} -type f -mtime +${backup_day} | tee delete_list.log | xargs rm -rf
-    cat delete_list.log >>${logfile}
+# Delete old backups
+delete_old_backup() {
+    log "Deleting old backup files"
+    find "${backup_dir}" -type f -mtime +${backup_day} -exec rm -f {} \; -print >> "${logfile}"
 }
 
-rsync_mysql_backup()
-{
-    # rsync 同步到其他Server中 #
-    for j in ${web_ip}
-    do                
-        echo "mysql_backup_rsync to ${j} begin at "$(date +'%Y-%m-%d %T') >>${logfile}
-        ### 同步 ###
-        rsync -avz --progress --delete $serverPath -e "ssh -p "${ssh_port}" -i "${id_rsa} ${id_rsa_user}@${j}:$clientPath >>${logfile} 2>&1 
-        echo "mysql_backup_rsync to ${j} done at "$(date +'%Y-%m-%d %T') >>${logfile}
-    done
+# Rsync backups to remote server
+rsync_mysql_backup() {
+    log "Starting rsync to ${web_ip}"
+    if rsync -avz --progress --delete -e "ssh -p ${ssh_port} -i ${id_rsa}" "${serverPath}" "${id_rsa_user}@${web_ip}:${clientPath}" >> "${logfile}" 2>&1; then
+        log "Rsync to ${web_ip} completed"
+    else
+        log "Rsync to ${web_ip} failed"
+        return 1
+    fi
 }
 
-#进入数据库备份文件目录
-cd ${backup_dir}
+# ------------------------ Main Execution ------------------------
 
-mysql_backup
-delete_old_backup
-rsync_mysql_backup
+# Create required directories before proceeding
+create_directories
 
-echo -e "========================mysql backup && rsync done at "$(date +'%Y-%m-%d %T')"============================\n\n">>${logfile}
-cat ${logfile}
+# Change to the backup directory; exit if it fails
+cd "${backup_dir}" || { log "Failed to change directory to ${backup_dir}"; exit 1; }
+
+# Perform the backup; log and exit on failure
+mysql_backup || { log "MySQL backup failed"; exit 1; }
+
+# Delete old backups; log and exit on failure
+delete_old_backup || { log "Failed to delete old backups"; exit 1; }
+
+# Sync backups to the remote server; log and exit on failure
+rsync_mysql_backup || { log "Rsync failed"; exit 1; }
+
+# Log completion of the entire process
+log "MySQL backup and rsync process completed successfully"
